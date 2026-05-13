@@ -2,6 +2,8 @@
 
 Personal fork of [tradesdontlie/tradingview-mcp](https://github.com/tradesdontlie/tradingview-mcp) with local fixes and a LuxAlgo-style level extraction script.
 
+> **Discord forwarder + VPS runbook**: see [DISCORD_SIGNALS.md](DISCORD_SIGNALS.md) and [OPERATIONS.md](OPERATIONS.md) for live signal forwarding setup and day-to-day VPS operations.
+
 ## Prerequisites
 
 - Node.js 18+

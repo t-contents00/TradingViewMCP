@@ -2,6 +2,8 @@
 
 Live forwarder for high-quality XAUUSD 5m scalp signals to a Discord channel via webhook.
 
+> For day-to-day VPS operations, troubleshooting, and the TradingView 1-session-per-account caveat, see **[OPERATIONS.md](OPERATIONS.md)**.
+
 ## Strategy (backtested, do not modify lightly)
 
 ### Entry (ALL must be true)
