@@ -58,7 +58,7 @@ function tv(...args) {
 
 // === State + trades persistence ===
 function loadState() {
-  if (!existsSync(STATE_FILE)) return { lastSTDir: 0, openTradeId: null, lastSummaryDay: '' };
+  if (!existsSync(STATE_FILE)) return { lastSTDir: 0, openTradeId: null, lastSummaryDay: '', lastSummaryWeek: '', lastSummaryMonth: '', cumulativeStartDate: '' };
   return JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
 }
 function saveState(s) { writeFileSync(STATE_FILE, JSON.stringify(s, null, 2)); }
@@ -176,7 +176,39 @@ function exitEmbed(trade) {
   };
 }
 
-function summaryEmbed(trades, periodLabel) {
+function computeStats(trades) {
+  if (!trades.length) return null;
+  const wins = trades.filter(t => t.pnl > 0);
+  const losses = trades.filter(t => t.pnl <= 0);
+  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
+  const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
+  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
+  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
+  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
+  const pf = totalLoss === 0 ? Infinity : totalWin / totalLoss;
+  // Max drawdown (running cumulative)
+  let peak = 0, cum = 0, maxDd = 0;
+  for (const t of trades.slice().sort((a, b) => a.exit_time - b.exit_time)) {
+    cum += t.pnl;
+    if (cum > peak) peak = cum;
+    if (peak - cum > maxDd) maxDd = peak - cum;
+  }
+  return {
+    n: trades.length,
+    wins: wins.length,
+    losses: losses.length,
+    winRate: wins.length / trades.length * 100,
+    totalPnl,
+    avgWin, avgLoss,
+    pf,
+    avgRR: avgLoss < 0 ? avgWin / Math.abs(avgLoss) : null,
+    best: Math.max(...trades.map(t => t.pnl)),
+    worst: Math.min(...trades.map(t => t.pnl)),
+    maxDd,
+  };
+}
+
+function summaryEmbed(trades, periodLabel, allClosed, cumulativeStartDate) {
   if (!trades.length) {
     return {
       embeds: [{
@@ -187,31 +219,34 @@ function summaryEmbed(trades, periodLabel) {
       }],
     };
   }
-  const wins = trades.filter(t => t.pnl > 0);
-  const losses = trades.filter(t => t.pnl <= 0);
-  const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
-  const avgWin = wins.length ? wins.reduce((s, t) => s + t.pnl, 0) / wins.length : 0;
-  const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
-  const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
-  const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const pf = totalLoss === 0 ? '∞' : (totalWin / totalLoss).toFixed(2);
-  const winRate = (wins.length / trades.length * 100).toFixed(1);
+  const s = computeStats(trades);
+  const cum = computeStats(allClosed);
+  const pfStr = !isFinite(s.pf) ? '∞' : s.pf.toFixed(2);
+  const fields = [
+    { name: 'Trades', value: `${s.n}`, inline: true },
+    { name: 'Win rate', value: `${s.winRate.toFixed(1)}%`, inline: true },
+    { name: 'Profit factor', value: pfStr, inline: true },
+    { name: 'Wins', value: `${s.wins}`, inline: true },
+    { name: 'Losses', value: `${s.losses}`, inline: true },
+    { name: 'Avg RR', value: s.avgRR ? s.avgRR.toFixed(2) : '—', inline: true },
+    { name: 'Avg win', value: `$${s.avgWin.toFixed(2)}`, inline: true },
+    { name: 'Avg loss', value: `$${s.avgLoss.toFixed(2)}`, inline: true },
+    { name: 'Best trade', value: `$${s.best.toFixed(2)}`, inline: true },
+  ];
+  if (cum && cum.n > s.n) {
+    const cumPfStr = !isFinite(cum.pf) ? '∞' : cum.pf.toFixed(2);
+    fields.push({
+      name: `📈 Cumulative (since ${cumulativeStartDate || 'start'})`,
+      value: `**${cum.totalPnl >= 0 ? '+' : ''}$${cum.totalPnl.toFixed(2)}/oz** · ${cum.n} trades · ${cum.winRate.toFixed(1)}% win · PF ${cumPfStr} · Max DD $${cum.maxDd.toFixed(2)}`,
+      inline: false,
+    });
+  }
   return {
     embeds: [{
-      title: `📊 ${periodLabel} summary — ${trades.length} trades`,
-      description: `**${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}/oz** = ${totalPnl >= 0 ? '+' : ''}$${(totalPnl * 100).toFixed(2)} per 100oz lot`,
-      color: totalPnl >= 0 ? 0x22c55e : 0xef4444,
-      fields: [
-        { name: 'Trades', value: `${trades.length}`, inline: true },
-        { name: 'Win rate', value: `${winRate}%`, inline: true },
-        { name: 'Profit factor', value: `${pf}`, inline: true },
-        { name: 'Wins', value: `${wins.length}`, inline: true },
-        { name: 'Losses', value: `${losses.length}`, inline: true },
-        { name: 'Avg RR', value: avgLoss < 0 ? `${(avgWin / Math.abs(avgLoss)).toFixed(2)}` : '—', inline: true },
-        { name: 'Avg win', value: `$${avgWin.toFixed(2)}`, inline: true },
-        { name: 'Avg loss', value: `$${avgLoss.toFixed(2)}`, inline: true },
-        { name: 'Best trade', value: `$${Math.max(...trades.map(t => t.pnl)).toFixed(2)}`, inline: true },
-      ],
+      title: `📊 ${periodLabel} summary — ${s.n} trades`,
+      description: `**${s.totalPnl >= 0 ? '+' : ''}$${s.totalPnl.toFixed(2)}/oz** = ${s.totalPnl >= 0 ? '+' : ''}$${(s.totalPnl * 100).toFixed(2)} per 100oz lot`,
+      color: s.totalPnl >= 0 ? 0x22c55e : 0xef4444,
+      fields,
       footer: { text: `Backtest expectancy +$14.53/trade · PF 3.52` },
       timestamp: new Date().toISOString(),
     }],
@@ -274,19 +309,64 @@ function checkExitConditions(trade, { price, stDir }) {
   return null;
 }
 
-// === Daily summary ===
-async function maybePostDailySummary(state) {
+// === Time helpers ===
+function isoYearWeek(date) {
+  // ISO week: Mon=1..Sun=7, week 1 = first week with Thursday
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
+// === Summaries ===
+async function maybePostSummaries(state) {
   const nowUtc = new Date();
-  const todayKey = nowUtc.toISOString().slice(0, 10);
-  if (state.lastSummaryDay === todayKey) return;
   if (nowUtc.getUTCHours() !== SUMMARY_HOUR_UTC) return;
-  // Aggregate trades closed in the last 24h
+
   const trades = loadTrades();
-  const cutoff = Date.now() / 1000 - 24 * 3600;
-  const recent = trades.filter(t => t.status === 'closed' && t.exit_time >= cutoff);
-  await postDiscord(summaryEmbed(recent, 'Daily (last 24h)'));
-  state.lastSummaryDay = todayKey;
-  saveState(state);
+  const allClosed = trades.filter(t => t.status === 'closed');
+  if (!state.cumulativeStartDate && allClosed.length) {
+    state.cumulativeStartDate = new Date(allClosed[0].entry_time * 1000).toISOString().slice(0, 10);
+  }
+
+  // Daily
+  const todayKey = nowUtc.toISOString().slice(0, 10);
+  if (state.lastSummaryDay !== todayKey) {
+    const cutoff = Date.now() / 1000 - 24 * 3600;
+    const recent = allClosed.filter(t => t.exit_time >= cutoff);
+    await postDiscord(summaryEmbed(recent, 'Daily (last 24h)', allClosed, state.cumulativeStartDate));
+    state.lastSummaryDay = todayKey;
+    saveState(state);
+  }
+
+  // Weekly — fire on Saturday (after Fri NY close)
+  if (nowUtc.getUTCDay() === 6) {
+    const weekKey = isoYearWeek(nowUtc);
+    if (state.lastSummaryWeek !== weekKey) {
+      const cutoff = Date.now() / 1000 - 7 * 24 * 3600;
+      const recent = allClosed.filter(t => t.exit_time >= cutoff);
+      await postDiscord(summaryEmbed(recent, `Weekly (${weekKey})`, allClosed, state.cumulativeStartDate));
+      state.lastSummaryWeek = weekKey;
+      saveState(state);
+    }
+  }
+
+  // Monthly — fire on day 1 of month
+  if (nowUtc.getUTCDate() === 1) {
+    const monthKey = nowUtc.toISOString().slice(0, 7); // YYYY-MM
+    if (state.lastSummaryMonth !== monthKey) {
+      // Previous month: anything closed between current month start - 31d and current month start
+      const monthStart = Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth(), 1) / 1000;
+      const prevMonthStart = Date.UTC(nowUtc.getUTCFullYear(), nowUtc.getUTCMonth() - 1, 1) / 1000;
+      const recent = allClosed.filter(t => t.exit_time >= prevMonthStart && t.exit_time < monthStart);
+      const prevMonthLabel = new Date(prevMonthStart * 1000).toISOString().slice(0, 7);
+      await postDiscord(summaryEmbed(recent, `Monthly (${prevMonthLabel})`, allClosed, state.cumulativeStartDate));
+      state.lastSummaryMonth = monthKey;
+      saveState(state);
+    }
+  }
 }
 
 function ensureTargetPane() {
@@ -351,7 +431,7 @@ async function tick(state) {
     state.lastSTDir = stDir;
     saveState(state);
 
-    await maybePostDailySummary(state);
+    await maybePostSummaries(state);
   } catch (e) {
     console.error('tick error:', e.message);
   }

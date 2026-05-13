@@ -18,7 +18,11 @@ Live forwarder for high-quality XAUUSD 5m scalp signals to a Discord channel via
 ### Notifications
 - **🟢/🔴 Entry** embed at signal firing — price, SL, TP (if enabled), session, BOS context, weekly regime
 - **🎯/⛔/🔄 Exit** embed at close — entry/exit, duration, pips, reason, P/L per oz and per 100oz lot
-- **📊 Daily summary** at `SUMMARY_HOUR_UTC` (default 22 UTC = 07:00 JST, right after NY close) — trade count, win rate, PF, avg win/loss, best trade
+- **📊 Daily summary** at `SUMMARY_HOUR_UTC` every day (default 22 UTC = 07:00 JST, right after NY close)
+- **📊 Weekly summary** on Saturdays at `SUMMARY_HOUR_UTC` (covers Mon-Fri)
+- **📊 Monthly summary** on day 1 of each month at `SUMMARY_HOUR_UTC` (covers previous calendar month)
+
+All summary embeds include a **📈 Cumulative** field with all-time stats since the first recorded trade: total P/L, trade count, win rate, PF, and max drawdown.
 
 Backtest (8 days, n=11): expectancy +$14.53/trade, PF 3.52, win rate 45.5%. CHoCH labels excluded — they degrade performance.
 

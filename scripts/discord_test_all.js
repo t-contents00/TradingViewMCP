@@ -86,7 +86,8 @@ function exitEmbed(trade) {
   };
 }
 
-function summaryEmbed(trades, periodLabel) {
+function computeStats(trades) {
+  if (!trades.length) return null;
   const wins = trades.filter(t => t.pnl > 0);
   const losses = trades.filter(t => t.pnl <= 0);
   const totalPnl = trades.reduce((s, t) => s + t.pnl, 0);
@@ -94,23 +95,52 @@ function summaryEmbed(trades, periodLabel) {
   const avgLoss = losses.length ? losses.reduce((s, t) => s + t.pnl, 0) / losses.length : 0;
   const totalWin = wins.reduce((s, t) => s + t.pnl, 0);
   const totalLoss = Math.abs(losses.reduce((s, t) => s + t.pnl, 0));
-  const pf = totalLoss === 0 ? '∞' : (totalWin / totalLoss).toFixed(2);
+  let peak = 0, cum = 0, maxDd = 0;
+  for (const t of trades.slice().sort((a, b) => (a.exit_time || 0) - (b.exit_time || 0))) {
+    cum += t.pnl;
+    if (cum > peak) peak = cum;
+    if (peak - cum > maxDd) maxDd = peak - cum;
+  }
+  return {
+    n: trades.length, wins: wins.length, losses: losses.length,
+    winRate: wins.length / trades.length * 100,
+    totalPnl, avgWin, avgLoss,
+    pf: totalLoss === 0 ? Infinity : totalWin / totalLoss,
+    avgRR: avgLoss < 0 ? avgWin / Math.abs(avgLoss) : null,
+    best: Math.max(...trades.map(t => t.pnl)),
+    maxDd,
+  };
+}
+
+function summaryEmbed(trades, periodLabel, allClosed, cumulativeStartDate) {
+  const s = computeStats(trades);
+  const cum = computeStats(allClosed);
+  const pfStr = !isFinite(s.pf) ? '∞' : s.pf.toFixed(2);
+  const fields = [
+    { name: 'Trades', value: `${s.n}`, inline: true },
+    { name: 'Win rate', value: `${s.winRate.toFixed(1)}%`, inline: true },
+    { name: 'Profit factor', value: pfStr, inline: true },
+    { name: 'Wins', value: `${s.wins}`, inline: true },
+    { name: 'Losses', value: `${s.losses}`, inline: true },
+    { name: 'Avg RR', value: s.avgRR ? s.avgRR.toFixed(2) : '—', inline: true },
+    { name: 'Avg win', value: `$${s.avgWin.toFixed(2)}`, inline: true },
+    { name: 'Avg loss', value: `$${s.avgLoss.toFixed(2)}`, inline: true },
+    { name: 'Best trade', value: `$${s.best.toFixed(2)}`, inline: true },
+  ];
+  if (cum && cum.n > s.n) {
+    const cumPfStr = !isFinite(cum.pf) ? '∞' : cum.pf.toFixed(2);
+    fields.push({
+      name: `📈 Cumulative (since ${cumulativeStartDate || 'start'})`,
+      value: `**${cum.totalPnl >= 0 ? '+' : ''}$${cum.totalPnl.toFixed(2)}/oz** · ${cum.n} trades · ${cum.winRate.toFixed(1)}% win · PF ${cumPfStr} · Max DD $${cum.maxDd.toFixed(2)}`,
+      inline: false,
+    });
+  }
   return {
     embeds: [{
-      title: tag(`📊 ${periodLabel} summary — ${trades.length} trades`),
-      description: `**${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)}/oz** = ${totalPnl >= 0 ? '+' : ''}$${(totalPnl * 100).toFixed(2)} per 100oz lot`,
-      color: totalPnl >= 0 ? 0x22c55e : 0xef4444,
-      fields: [
-        { name: 'Trades', value: `${trades.length}`, inline: true },
-        { name: 'Win rate', value: `${(wins.length / trades.length * 100).toFixed(1)}%`, inline: true },
-        { name: 'Profit factor', value: `${pf}`, inline: true },
-        { name: 'Wins', value: `${wins.length}`, inline: true },
-        { name: 'Losses', value: `${losses.length}`, inline: true },
-        { name: 'Avg RR', value: avgLoss < 0 ? `${(avgWin / Math.abs(avgLoss)).toFixed(2)}` : '—', inline: true },
-        { name: 'Avg win', value: `$${avgWin.toFixed(2)}`, inline: true },
-        { name: 'Avg loss', value: `$${avgLoss.toFixed(2)}`, inline: true },
-        { name: 'Best trade', value: `$${Math.max(...trades.map(t => t.pnl)).toFixed(2)}`, inline: true },
-      ],
+      title: tag(`📊 ${periodLabel} summary — ${s.n} trades`),
+      description: `**${s.totalPnl >= 0 ? '+' : ''}$${s.totalPnl.toFixed(2)}/oz** = ${s.totalPnl >= 0 ? '+' : ''}$${(s.totalPnl * 100).toFixed(2)} per 100oz lot`,
+      color: s.totalPnl >= 0 ? 0x22c55e : 0xef4444,
+      fields,
       footer: { text: `Backtest expectancy +$14.53/trade · PF 3.52` },
       timestamp: new Date().toISOString(),
     }],
@@ -120,7 +150,7 @@ function summaryEmbed(trades, periodLabel) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const PAUSE = 1500;
 
-console.log('Sending 6 sample notifications...\n');
+console.log('Sending 8 sample notifications (incl. weekly/monthly with cumulative)...\n');
 
 // 1. LONG entry
 console.log('1/6 LONG entry...'); await post(entryEmbed(mockLong)); await sleep(PAUSE);
@@ -142,10 +172,36 @@ console.log('5/6 ST-flip exit...'); await post(exitEmbed(flipExit)); await sleep
 
 // 6. Daily summary (3 trades: 2 wins, 1 loss)
 const dailyTrades = [
-  { pnl: 35.36 }, // mock TP win
-  { pnl: -17.10 }, // mock SL loss
-  { pnl: 14.00 }, // mock flip win
+  { pnl: 35.36, exit_time: 1778600000 },
+  { pnl: -17.10, exit_time: 1778620000 },
+  { pnl: 14.00, exit_time: 1778640000 },
 ];
-console.log('6/6 Daily summary...'); await post(summaryEmbed(dailyTrades, 'Daily (sample)'));
+// Cumulative pool: simulate ~30 trades for a realistic cumulative line
+const cumulativePool = [
+  ...dailyTrades,
+  { pnl: 28.5, exit_time: 1778100000 }, { pnl: -15.2, exit_time: 1778120000 },
+  { pnl: 21.7, exit_time: 1778140000 }, { pnl: 18.4, exit_time: 1778160000 },
+  { pnl: -12.8, exit_time: 1778180000 }, { pnl: 33.1, exit_time: 1778200000 },
+  { pnl: -16.5, exit_time: 1778220000 }, { pnl: 24.9, exit_time: 1778240000 },
+  { pnl: 19.3, exit_time: 1778260000 }, { pnl: -11.7, exit_time: 1778280000 },
+  { pnl: 27.6, exit_time: 1778300000 }, { pnl: -14.4, exit_time: 1778320000 },
+  { pnl: 22.1, exit_time: 1778340000 }, { pnl: 16.8, exit_time: 1778360000 },
+  { pnl: -13.5, exit_time: 1778380000 }, { pnl: 29.7, exit_time: 1778400000 },
+  { pnl: -10.9, exit_time: 1778420000 }, { pnl: 25.4, exit_time: 1778440000 },
+  { pnl: 20.6, exit_time: 1778460000 }, { pnl: -18.2, exit_time: 1778480000 },
+  { pnl: 31.8, exit_time: 1778500000 }, { pnl: -15.7, exit_time: 1778520000 },
+  { pnl: 23.5, exit_time: 1778540000 }, { pnl: 17.9, exit_time: 1778560000 },
+];
 
-console.log('\n✓ All 6 samples sent. Check your Discord channel.');
+const startDate = '2026-04-13';
+console.log('6/8 Daily summary...'); await post(summaryEmbed(dailyTrades, 'Daily (sample)', cumulativePool, startDate)); await sleep(PAUSE);
+
+// 7. Weekly summary
+const weeklyTrades = cumulativePool.slice(0, 8);
+console.log('7/8 Weekly summary...'); await post(summaryEmbed(weeklyTrades, 'Weekly (2026-W20)', cumulativePool, startDate)); await sleep(PAUSE);
+
+// 8. Monthly summary
+const monthlyTrades = cumulativePool.slice(0, 22);
+console.log('8/8 Monthly summary...'); await post(summaryEmbed(monthlyTrades, 'Monthly (2026-04)', cumulativePool, startDate));
+
+console.log('\n✓ All 8 samples sent. Check your Discord channel.');
