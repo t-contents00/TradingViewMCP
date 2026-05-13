@@ -7,3 +7,10 @@ discovery-log.json
 # Session-generated OHLCV data files for analysis scripts
 xauusd_5m.json
 *_ohlcv.json
+xauusd_*.json
+chart_full_bars.json
+luxalgo_labels.json
+# Discord signal forwarder state
+scripts/discord_state.json
+# Local env (Discord webhook URL etc.)
+.env
