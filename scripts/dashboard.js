@@ -26,10 +26,18 @@ function safeJson(p, fallback) {
   try { return JSON.parse(readFileSync(p, 'utf-8')); } catch { return fallback; }
 }
 
+function readTextSmart(p) {
+  // Handle UTF-16 LE BOM / UTF-8 BOM (PowerShell Start-Process redirected
+  // stdout sometimes uses UTF-16 on Windows).
+  const buf = readFileSync(p);
+  if (buf.length >= 2 && buf[0] === 0xFF && buf[1] === 0xFE) return buf.slice(2).toString('utf16le');
+  if (buf.length >= 3 && buf[0] === 0xEF && buf[1] === 0xBB && buf[2] === 0xBF) return buf.slice(3).toString('utf-8');
+  return buf.toString('utf-8');
+}
+
 function tailLog(n = 30) {
   if (!existsSync(LOG_FILE)) return [];
-  const data = readFileSync(LOG_FILE, 'utf-8');
-  return data.split('\n').filter(l => l.trim()).slice(-n);
+  return readTextSmart(LOG_FILE).split(/\r?\n/).filter(l => l.trim()).slice(-n);
 }
 
 function readPidFile(p) {
