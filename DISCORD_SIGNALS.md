@@ -4,12 +4,21 @@ Live forwarder for high-quality XAUUSD 5m scalp signals to a Discord channel via
 
 ## Strategy (backtested, do not modify lightly)
 
-Entry conditions (ALL must be true):
-
+### Entry (ALL must be true)
 1. **5m Supertrend(10, 3) direction flip** detected vs previous poll
 2. **Same-direction LuxAlgo BOS label within prior 5 bars** (continuation confluence)
 3. **Session ∈ { NY, London/NY overlap }** — Tokyo and London-only excluded
 4. **Trade aligns with Weekly Supertrend regime** (set via `WEEKLY_DIR` env var)
+
+### Exit (any triggers close)
+- **SL hit**: price crosses the entry-time Supertrend line
+- **TP hit** (optional): price reaches `RR_TARGET` × stop distance from entry. Disabled by default — set `ENABLE_TP=1` to use. Backtest used Supertrend-flip exit (no TP) and achieved realized RR ~3.2.
+- **Supertrend flips**: trend indicator reverses against position
+
+### Notifications
+- **🟢/🔴 Entry** embed at signal firing — price, SL, TP (if enabled), session, BOS context, weekly regime
+- **🎯/⛔/🔄 Exit** embed at close — entry/exit, duration, pips, reason, P/L per oz and per 100oz lot
+- **📊 Daily summary** at `SUMMARY_HOUR_UTC` (default 22 UTC = 07:00 JST, right after NY close) — trade count, win rate, PF, avg win/loss, best trade
 
 Backtest (8 days, n=11): expectancy +$14.53/trade, PF 3.52, win rate 45.5%. CHoCH labels excluded — they degrade performance.
 
@@ -27,7 +36,11 @@ Create `.env` in this repo root (already in `.gitignore`):
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/<id>/<token>
 WEEKLY_DIR=bull          # or bear — re-run scripts/backtest_regime.js to verify
 POLL_INTERVAL_MS=30000   # default 30s
-SYMBOL=OANDA:XAUUSD      # display only
+SYMBOL=OANDA:XAUUSD      # display + pane symbol check
+TARGET_PANE=0            # pane index to lock to (default 0)
+ENABLE_TP=0              # 1 to enable fixed-RR TP exit; default off (ST-flip exit only)
+RR_TARGET=2.0            # TP at this multiple of stop distance (only used if ENABLE_TP=1)
+SUMMARY_HOUR_UTC=22      # hour to post daily summary (22 UTC = 07:00 JST after NY close)
 ```
 
 ### 3. Prerequisites

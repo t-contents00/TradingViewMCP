@@ -10,7 +10,8 @@ xauusd_5m.json
 xauusd_*.json
 chart_full_bars.json
 luxalgo_labels.json
-# Discord signal forwarder state
+# Discord signal forwarder state & trade ledger
 scripts/discord_state.json
+scripts/trades.json
 # Local env (Discord webhook URL etc.)
 .env
