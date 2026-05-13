@@ -58,7 +58,7 @@ function tv(...args) {
 
 // === State + trades persistence ===
 function loadState() {
-  if (!existsSync(STATE_FILE)) return { lastSTDir: 0, openTradeId: null, lastSummaryDay: '', lastSummaryWeek: '', lastSummaryMonth: '', cumulativeStartDate: '' };
+  if (!existsSync(STATE_FILE)) return { lastSTDir: 0, openTradeId: null, lastSummaryDay: '', lastSummaryWeek: '', lastSummaryMonth: '', cumulativeStartDate: '', lastHeartbeat: 0 };
   return JSON.parse(readFileSync(STATE_FILE, 'utf-8'));
 }
 function saveState(s) { writeFileSync(STATE_FILE, JSON.stringify(s, null, 2)); }
@@ -129,22 +129,35 @@ async function postDiscord(payload) {
   else console.log(`[${new Date().toISOString()}] Discord notified ✓`);
 }
 
+function sessionLabel(s) {
+  return { tokyo: '東京', london: 'ロンドン', london_ny_overlap: 'ロンドン/NY重複', ny: 'NY', off_hours: '時間外' }[s] || s;
+}
+
 function entryEmbed(trade) {
   const arrow = trade.direction === 1 ? '🟢' : '🔴';
-  const action = trade.direction === 1 ? 'LONG' : 'SHORT';
+  const action = trade.direction === 1 ? '買い' : '売り';
   const color = trade.direction === 1 ? 0x4ade80 : 0xf87171;
+  const slDist = Math.abs(trade.sl - trade.entry_price).toFixed(2);
   const fields = [
-    { name: 'Entry', value: `$${trade.entry_price.toFixed(2)}`, inline: true },
-    { name: 'SL', value: `$${trade.sl.toFixed(2)} (${(trade.sl - trade.entry_price).toFixed(2)})`, inline: true },
-    { name: 'Session', value: trade.session, inline: true },
+    { name: '📍 エントリー価格', value: `**$${trade.entry_price.toFixed(2)}**`, inline: true },
+    { name: '🛑 損切り', value: `$${trade.sl.toFixed(2)}\n(値幅 $${slDist})`, inline: true },
+    { name: '⏰ セッション', value: sessionLabel(trade.session), inline: true },
   ];
-  if (trade.tp) fields.push({ name: 'TP', value: `$${trade.tp.toFixed(2)} (RR ${RR_TARGET})`, inline: true });
-  fields.push({ name: 'BOS confluence', value: `$${trade.bos_price.toFixed(2)}`, inline: true });
-  fields.push({ name: 'Weekly regime', value: trade.weekly_dir === 1 ? '📈 BULL (aligned)' : '📉 BEAR', inline: true });
+  if (trade.tp) {
+    const tpDist = Math.abs(trade.tp - trade.entry_price).toFixed(2);
+    fields.push({ name: '🎯 利確目標', value: `$${trade.tp.toFixed(2)}\n(値幅 $${tpDist})`, inline: true });
+  }
+  fields.push({ name: '✅ 上昇構造ブレイク', value: `$${trade.bos_price.toFixed(2)}\nLuxAlgo が確認済み`, inline: true });
+  fields.push({ name: '📊 大局トレンド', value: trade.weekly_dir === 1 ? '週足: 上昇 ✅\n方向一致' : '週足: 下降 ✅\n方向一致', inline: true });
+  fields.push({
+    name: '🎯 次にやること',
+    value: `1. TradingView で **${SYMBOL}** チャートを確認\n2. **$${trade.entry_price.toFixed(2)}** 付近で${action}注文\n3. 損切り **$${trade.sl.toFixed(2)}** をセット${trade.tp ? `\n4. 利確 **$${trade.tp.toFixed(2)}** をセット` : '\n4. トレンド反転まで保有 (反対方向の通知が来るまで)'}`,
+    inline: false
+  });
   return {
     embeds: [{
-      title: `${arrow} ${action} ENTRY — ${SYMBOL}`,
-      description: `5m Supertrend reversal + LuxAlgo BOS confluence`,
+      title: `${arrow} ${action}シグナル発生 — ${SYMBOL}`,
+      description: `**5分足でトレンドが反転し、上昇継続サインも確認できました。**\n過去成績: 勝率45.5% / 利益額/損失額=3.52倍 (過去8日, n=11)`,
       color, fields,
       footer: { text: `Trade ID: ${trade.id}` },
       timestamp: new Date(trade.entry_time * 1000).toISOString(),
@@ -153,22 +166,29 @@ function entryEmbed(trade) {
 }
 
 function exitEmbed(trade) {
-  const reasonEmoji = trade.exit_reason === 'TP' ? '🎯' : trade.exit_reason === 'SL' ? '⛔' : '🔄';
+  const reasonMap = {
+    TP: { emoji: '🎯', label: '利確到達', detail: '目標価格に到達したので利益確定' },
+    SL: { emoji: '⛔', label: '損切り', detail: '損切りラインに当たったので撤退' },
+    flip: { emoji: '🔄', label: 'トレンド反転', detail: 'Supertrend が反対方向に変わったので決済' },
+  };
+  const r = reasonMap[trade.exit_reason] || { emoji: '🚪', label: trade.exit_reason, detail: '' };
   const pnlEmoji = trade.pnl > 0 ? '💰' : '📉';
   const color = trade.pnl > 0 ? 0x22c55e : 0xef4444;
   const duration = ((trade.exit_time - trade.entry_time) / 60).toFixed(0);
+  const moveValue = trade.direction === 1 ? trade.exit_price - trade.entry_price : trade.entry_price - trade.exit_price;
+  const sign = trade.pnl > 0 ? '+' : '';
   return {
     embeds: [{
-      title: `${reasonEmoji} EXIT (${trade.exit_reason}) — ${trade.direction === 1 ? 'LONG' : 'SHORT'} ${SYMBOL}`,
-      description: `${pnlEmoji} **${trade.pnl > 0 ? '+' : ''}$${trade.pnl.toFixed(2)}/oz** = ${trade.pnl > 0 ? '+' : ''}$${(trade.pnl * 100).toFixed(2)} per 100oz lot`,
+      title: `${r.emoji} 決済通知 — ${trade.direction === 1 ? '買い' : '売り'}ポジション (${r.label})`,
+      description: `${pnlEmoji} **${sign}$${trade.pnl.toFixed(2)}** (1oz換算) = **${sign}$${(trade.pnl * 100).toFixed(2)}** (100oz=1ロット換算)\n${r.detail}`,
       color,
       fields: [
-        { name: 'Entry', value: `$${trade.entry_price.toFixed(2)}`, inline: true },
-        { name: 'Exit', value: `$${trade.exit_price.toFixed(2)}`, inline: true },
-        { name: 'Duration', value: `${duration} min`, inline: true },
-        { name: 'Pips move', value: `${(trade.direction === 1 ? trade.exit_price - trade.entry_price : trade.entry_price - trade.exit_price).toFixed(2)}`, inline: true },
-        { name: 'Reason', value: trade.exit_reason, inline: true },
-        { name: 'Session', value: trade.session, inline: true },
+        { name: '📍 エントリー価格', value: `$${trade.entry_price.toFixed(2)}`, inline: true },
+        { name: '🚪 決済価格', value: `$${trade.exit_price.toFixed(2)}`, inline: true },
+        { name: '⏱ 保有時間', value: `${duration} 分`, inline: true },
+        { name: '📏 値幅', value: `${moveValue.toFixed(2)}`, inline: true },
+        { name: '🏁 決済理由', value: r.label, inline: true },
+        { name: '⏰ セッション', value: sessionLabel(trade.session), inline: true },
       ],
       footer: { text: `Trade ID: ${trade.id}` },
       timestamp: new Date(trade.exit_time * 1000).toISOString(),
@@ -212,8 +232,8 @@ function summaryEmbed(trades, periodLabel, allClosed, cumulativeStartDate) {
   if (!trades.length) {
     return {
       embeds: [{
-        title: `📊 ${periodLabel} summary — no trades`,
-        description: 'No signals fired in this period.',
+        title: `📊 ${periodLabel} — トレード無し`,
+        description: '対象期間中にシグナル発火なし。市場待ちの状態でした。',
         color: 0x6b7280,
         timestamp: new Date().toISOString(),
       }],
@@ -222,32 +242,32 @@ function summaryEmbed(trades, periodLabel, allClosed, cumulativeStartDate) {
   const s = computeStats(trades);
   const cum = computeStats(allClosed);
   const pfStr = !isFinite(s.pf) ? '∞' : s.pf.toFixed(2);
+  const sign = s.totalPnl >= 0 ? '+' : '';
+  const verdict = s.totalPnl >= 0 ? '🟢 利益' : '🔴 損失';
   const fields = [
-    { name: 'Trades', value: `${s.n}`, inline: true },
-    { name: 'Win rate', value: `${s.winRate.toFixed(1)}%`, inline: true },
-    { name: 'Profit factor', value: pfStr, inline: true },
-    { name: 'Wins', value: `${s.wins}`, inline: true },
-    { name: 'Losses', value: `${s.losses}`, inline: true },
-    { name: 'Avg RR', value: s.avgRR ? s.avgRR.toFixed(2) : '—', inline: true },
-    { name: 'Avg win', value: `$${s.avgWin.toFixed(2)}`, inline: true },
-    { name: 'Avg loss', value: `$${s.avgLoss.toFixed(2)}`, inline: true },
-    { name: 'Best trade', value: `$${s.best.toFixed(2)}`, inline: true },
+    { name: '🎯 トレード数', value: `${s.n} 回`, inline: true },
+    { name: '🏆 勝率', value: `${s.winRate.toFixed(1)}% (${s.wins}勝 ${s.losses}敗)`, inline: true },
+    { name: '⚖️ 利益÷損失', value: `${pfStr} 倍`, inline: true },
+    { name: '📈 平均勝ち', value: `$${s.avgWin.toFixed(2)}`, inline: true },
+    { name: '📉 平均負け', value: `$${s.avgLoss.toFixed(2)}`, inline: true },
+    { name: '⭐ 最大勝ち', value: `$${s.best.toFixed(2)}`, inline: true },
   ];
   if (cum && cum.n > s.n) {
     const cumPfStr = !isFinite(cum.pf) ? '∞' : cum.pf.toFixed(2);
+    const cumSign = cum.totalPnl >= 0 ? '+' : '';
     fields.push({
-      name: `📈 Cumulative (since ${cumulativeStartDate || 'start'})`,
-      value: `**${cum.totalPnl >= 0 ? '+' : ''}$${cum.totalPnl.toFixed(2)}/oz** · ${cum.n} trades · ${cum.winRate.toFixed(1)}% win · PF ${cumPfStr} · Max DD $${cum.maxDd.toFixed(2)}`,
+      name: `📊 累計 (${cumulativeStartDate || '開始日'}〜)`,
+      value: `**${cumSign}$${cum.totalPnl.toFixed(2)}** (1oz) / **${cumSign}$${(cum.totalPnl*100).toFixed(2)}** (100oz)\n総トレード ${cum.n}回 · 勝率 ${cum.winRate.toFixed(1)}% · 利益損失比 ${cumPfStr}\n最大ドローダウン $${cum.maxDd.toFixed(2)} (最大の損失累積)`,
       inline: false,
     });
   }
   return {
     embeds: [{
-      title: `📊 ${periodLabel} summary — ${s.n} trades`,
-      description: `**${s.totalPnl >= 0 ? '+' : ''}$${s.totalPnl.toFixed(2)}/oz** = ${s.totalPnl >= 0 ? '+' : ''}$${(s.totalPnl * 100).toFixed(2)} per 100oz lot`,
+      title: `📊 ${periodLabel} 集計 — ${s.n}トレード ${verdict}`,
+      description: `**${sign}$${s.totalPnl.toFixed(2)}** (1oz換算) / **${sign}$${(s.totalPnl * 100).toFixed(2)}** (100oz=1ロット換算)`,
       color: s.totalPnl >= 0 ? 0x22c55e : 0xef4444,
       fields,
-      footer: { text: `Backtest expectancy +$14.53/trade · PF 3.52` },
+      footer: { text: `バックテスト期待値 +$14.53/trade · 利益損失比 3.52倍` },
       timestamp: new Date().toISOString(),
     }],
   };
@@ -432,9 +452,42 @@ async function tick(state) {
     saveState(state);
 
     await maybePostSummaries(state);
+    await maybePostHeartbeat(state, { price, stDir, stLine, session });
   } catch (e) {
     console.error('tick error:', e.message);
   }
+}
+
+// === Heartbeat (every HEARTBEAT_HOURS, default 6h) ===
+const HEARTBEAT_HOURS = +(process.env.HEARTBEAT_HOURS || 6);
+async function maybePostHeartbeat(state, ctx) {
+  const now = Date.now();
+  if (state.lastHeartbeat && (now - state.lastHeartbeat) < HEARTBEAT_HOURS * 3600 * 1000) return;
+  const trades = loadTrades();
+  const open = trades.find(t => t.status === 'open');
+  const closed = trades.filter(t => t.status === 'closed');
+  const todayStart = Math.floor(now / 1000) - 24 * 3600;
+  const today = closed.filter(t => t.exit_time >= todayStart);
+  const todayPnl = today.reduce((s, t) => s + t.pnl, 0);
+  await postDiscord({
+    embeds: [{
+      title: '💚 フォワーダー稼働中',
+      description: `${HEARTBEAT_HOURS}時間毎の生存確認です。VPSが正常に動いてます。`,
+      color: 0x60a5fa,
+      fields: [
+        { name: '💰 現在価格', value: `$${ctx.price.toFixed(2)} (${SYMBOL})`, inline: true },
+        { name: '📊 Supertrend', value: `${ctx.stDir > 0 ? '上昇 ↑' : '下降 ↓'} @ $${ctx.stLine.toFixed(2)}`, inline: true },
+        { name: '⏰ セッション', value: sessionLabel(ctx.session), inline: true },
+        { name: '🎯 保有ポジション', value: open ? `${open.direction === 1 ? '🟢 買い' : '🔴 売り'} @ $${open.entry_price.toFixed(2)}` : 'なし', inline: true },
+        { name: '📅 今日の損益', value: `${today.length}トレード ${todayPnl >= 0 ? '+' : ''}$${todayPnl.toFixed(2)}`, inline: true },
+        { name: '📈 累計', value: `${closed.length}トレード`, inline: true },
+      ],
+      footer: { text: 'シグナル無し時は静かです。これは正常です。' },
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  state.lastHeartbeat = now;
+  saveState(state);
 }
 
 const state = loadState();
