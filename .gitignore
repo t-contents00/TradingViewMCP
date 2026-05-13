@@ -4,3 +4,6 @@ scripts/current.pine
 temp_*
 *.log
 discovery-log.json
+# Session-generated OHLCV data files for analysis scripts
+xauusd_5m.json
+*_ohlcv.json
